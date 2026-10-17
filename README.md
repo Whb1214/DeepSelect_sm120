@@ -1,4 +1,35 @@
-# DeepSelect
+# DeepSelect: Experimental SM120 Port
+
+> This is an experimental RTX 50 Series adaptation of [DeepSeek-AI/DeepSelect](https://github.com/deepseek-ai/DeepSelect). The V3 TopK algorithm and base CUDA kernels come from the upstream project; this branch adds an SM120 build path and reduced-shared-memory kernel configurations.
+
+## RTX 50 Series (SM120) Port
+
+**Status:** Built and functionally checked on an RTX 5060 Laptop GPU (SM120), WSL2 Ubuntu 24.04, CUDA Toolkit 12.8, and PyTorch 2.11.0+cu128.
+
+The port currently supports BF16 and FP32 with `topk <= 1024` and `vocab_size < 5,242,880`. It uses the ordinary V3 path, disables the 16-CTA BF16 cluster path, and uses 128-bit global load/store operations instead of the SM100-family 256-bit path.
+
+### Build
+
+Requires CUDA-enabled PyTorch, Triton, CUDA Toolkit 12.8 or newer, and `pciutils` (`lspci`) on WSL2. Force CUDA target detection because `lspci` may not expose the Windows GPU:
+
+```bash
+git clone --branch sm120-rtx50 --recurse-submodules https://github.com/Whb1214/DeepSelect_sm120.git
+cd DeepSelect_sm120
+DEEP_SELECT_BUILD_TARGET_PLATFORM=CUDA DEEP_SELECT_CUDA_ARCH=sm120 \
+  python -m pip install --no-build-isolation --no-deps -v .
+```
+
+After installing in WSL, run Python outside the checkout (for example, `cd ~`) so the source directory does not shadow the installed extension.
+
+### Local validation
+
+BF16 and FP32 smoke checks matched `torch.topk`, including `topk=1024`, sorted-index output, and indices-only output. A representative 28-case run on the RTX 5060 compared against `torch.topk`: speedups ranged from 1.37x to 6.22x, with a 4.76x median. Inputs were generated with `torch.randn`; these are selected shape-specific results, not the full upstream benchmark matrix or a claim about other GPUs. Raw measurements are in [`benchmark_results_sm120_rtx5060.csv`](benchmark_results_sm120_rtx5060.csv).
+
+This is an experimental port. Broader shape coverage and repeated benchmark runs are still needed.
+
+---
+
+## Upstream DeepSelect Project
 
 DeepSelect is a high performance implementation of the TopK kernel used in DeepSeek Sparse Attention (DSA) (which is used in DeepSeek V3.2, DeepSeek V4, and DeepSeek V4.1 models) and the sampler. It supports NVIDIA CUDA and Huawei Ascend platforms, and achieves 2 ~ 20x speedup compared to vanilla `torch.topk`.
 
@@ -36,7 +67,9 @@ This scenario covers:
 
 Currently, only the CUDA implementation supports `torch.float32` as the input dtype. The Ascend implementation supports `torch.bfloat16` only.
 
-## Performance
+## Upstream Performance
+
+The plots below are from the upstream project's benchmark results; they are not measurements of this SM120 port.
 
 Measured with the benchmark in [`tests/test.py`](tests/test.py)
 (`python3 tests/test.py --perf-only`), which reports the ratio against `torch.topk`
@@ -69,22 +102,6 @@ cd DeepSelect
 git submodule update --init --recursive
 pip install -v .
 ```
-
-### NVIDIA RTX 50 Series (SM120, experimental port)
-
-An experimental SM120 build target is available for Linux or WSL2 with CUDA Toolkit 12.8 or newer. On WSL2, force the CUDA build target because PCI device auto-detection does not see the Windows GPU directly:
-
-```bash
-DEEP_SELECT_BUILD_TARGET_PLATFORM=CUDA DEEP_SELECT_CUDA_ARCH=sm120 python -m pip install --no-build-isolation -v .
-```
-
-Run this in an environment that already has CUDA-enabled PyTorch and Triton installed. WSL also needs the system package `pciutils`, which provides the `lspci` command used by the project's build helper.
-
-After installation in WSL, activate the same virtual environment and run Python from outside the checkout (for example, `cd ~`) so the source directory does not shadow the installed extension.
-
-This target keeps the V3 selection algorithm and compiles SM120-specific BF16 and FP32 configurations with a smaller shared-memory footprint. It disables the 16-CTA BF16 cluster path and uses the ordinary V3 path. SM100-family 256-bit global load/store selection is not enabled for SM120; the 128-bit path is used instead. The current SM120 configurations support `topk <= 1024` and `vocab_size < 5,242,880`; the default build target remains unchanged.
-
-Validated on WSL2 Ubuntu 24.04, CUDA Toolkit 12.8, PyTorch 2.11.0+cu128, and an RTX 5060 Laptop GPU. Smoke checks matched `torch.topk` for BF16 and FP32, including `topk=1024`, sorted-index output, and indices-only output. A representative 28-case performance run compared against `torch.topk` on this GPU; speedups ranged from 1.37x to 6.22x (median 4.76x). These measurements are hardware- and shape-specific, and do not cover the full upstream benchmark matrix. See [`benchmark_results_sm120_rtx5060.csv`](benchmark_results_sm120_rtx5060.csv); broader shapes and repeatability still need coverage.
 
 ## Usage
 
