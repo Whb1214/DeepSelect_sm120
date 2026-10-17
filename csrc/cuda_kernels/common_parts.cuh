@@ -23,13 +23,13 @@ namespace topk_select_common {
 
 // Choose the loading & storing instruction
 #if IS_LDG_STG_256_AVAILABLE
-    // Use LDG256 / STG256 on sm100+
+    // Use LDG256 / STG256 on the SM100 family.
     static constexpr uint32_t NUM_BYTES_PER_GMEM_LOAD = 256 / 8;
     static constexpr uint32_t NUM_BYTES_PER_GMEM_STORE = 256 / 8;
     #define LOAD_FROM_GMEM(src_ptr, dst_reg) KU_LDG_256(src_ptr, dst_reg, ".nc", "no_allocate", "evict_last", "256B")
     #define STORE_TO_GMEM(dst_ptr, src_reg) KU_STG_256(dst_ptr, src_reg, "no_allocate", "evict_first")
 #else
-    // Use LDG128 on sm90 and below
+    // Use LDG128 on SM90 and below, and on architectures without the SM100 path.
     static constexpr uint32_t NUM_BYTES_PER_GMEM_LOAD = 128 / 8;
     static constexpr uint32_t NUM_BYTES_PER_GMEM_STORE = 128 / 8;
     #define LOAD_FROM_GMEM(src_ptr, dst_reg) KU_LDG_128(src_ptr, dst_reg, ".nc", "no_allocate", "256B")
@@ -295,6 +295,7 @@ public:
     static constexpr uint32_t NUM_THREADS = Config::num_threads;
     static constexpr uint32_t NUM_WARPS = NUM_THREADS / 32;
     static constexpr uint32_t MAX_TOPK = Config::max_topk;
+    static constexpr uint32_t MAX_VOCAB_SIZE = Config::max_vocab_size;
     static_assert(NUM_THREADS == 256 || NUM_THREADS == 512);
 
     static constexpr uint32_t NUM_ELEMS_PER_128b = 16 / sizeof(ValueT); 
@@ -378,7 +379,7 @@ public:
 
     static_assert(NUM_EXTRA_SLOTS * sizeof(uint64_t) >= NUM_ELEMS_IN_INIT_WINDOW * sizeof(ValueT),
                 "the init window must fit in the extra pairs region");
-    static_assert(NUM_EXTRA_SLOTS * sizeof(uint64_t) / sizeof(uint32_t) >= MAX_VOCAB_SIZE / NUM_ELEMS_PER_SEG,
+    static_assert(NUM_EXTRA_SLOTS * sizeof(uint64_t) / sizeof(uint32_t) >= Config::max_vocab_size / NUM_ELEMS_PER_SEG,
                 "the index sort's window delta table must fit in the extra pairs region");
     // array `incoming_topk_pairs` will be used as 
     //     1. tma buffer during init phase

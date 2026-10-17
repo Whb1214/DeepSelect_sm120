@@ -8,6 +8,14 @@ Usage caveats:
 
 #pragma once
 
+// CUTLASS 4.4 provides the SM120 CTA-scope TMA instruction path, but CUDA 12.8
+// does not define CUTE_ARCH_TMA_SM90_ENABLED for base SM120. Enable the shared
+// TMA code only during the SM120 device pass; leaving the host pass untouched
+// avoids host/device annotation conflicts in CUTLASS's TMA helpers.
+#if defined(__CUDA_ARCH__) && (__CUDA_ARCH__ == 1200) && !defined(CUTE_ARCH_TMA_SM90_ENABLED)
+#define CUTE_ARCH_TMA_SM90_ENABLED
+#endif
+
 #include "topk_select.h"
 
 #include <cutlass/kernel_launch.h>
@@ -124,15 +132,19 @@ void run_topk_select_kernel(const TopkSelectArgs &args) {
     KU_ASSERT(args.sorted_index == Config::sorted_index, "Dispatch failure");
     KU_ASSERT(args.return_value == Config::return_value, "Dispatch failure");
     static_assert(cute::is_same_v<typename Config::ValueT, nv_bfloat16>);
-    KU_ASSERT(args.vocab_size < MAX_VOCAB_SIZE, "`vocab_size` is too big");
-
     using Kernel = TopkSelectKernelBF16Normal<Config>;
+    KU_ASSERT(args.vocab_size < Kernel::MAX_VOCAB_SIZE, "`vocab_size` exceeds this kernel configuration's limit");
+
     KU_ASSERT(args.topk <= Kernel::MAX_TOPK, "topk is too large. Maximum allowed: %d\n", Kernel::MAX_TOPK);
     static_assert(INPUT_STRIDE_ALIGNMENT_REQUIREMENT % 16 == 0);
 
     auto kernel = topk_kernel<Kernel>;
     constexpr size_t smem_size = sizeof(typename Kernel::SharedMemoryPlan);
-    KU_ASSERT(smem_size * Kernel::TARGET_OCCUPANCY <= args.shared_memory_size_per_sm);
+    KU_ASSERT(smem_size * Kernel::TARGET_OCCUPANCY <= args.shared_memory_size_per_sm,
+              "kernel requires %llu bytes (%zu bytes per CTA x %u CTAs), device opt-in limit is %llu bytes",
+              static_cast<unsigned long long>(smem_size * Kernel::TARGET_OCCUPANCY),
+              smem_size, Kernel::TARGET_OCCUPANCY,
+              static_cast<unsigned long long>(args.shared_memory_size_per_sm));
     KU_CUDA_CHECK(cudaFuncSetAttribute(kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, smem_size));
 
     KU_ASSERT(args.stride_input_batch % 8 == 0, "stride_input_batch must be 16B-aligned");

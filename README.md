@@ -70,6 +70,22 @@ git submodule update --init --recursive
 pip install -v .
 ```
 
+### NVIDIA RTX 50 Series (SM120, experimental port)
+
+An experimental SM120 build target is available for Linux or WSL2 with CUDA Toolkit 12.8 or newer. On WSL2, force the CUDA build target because PCI device auto-detection does not see the Windows GPU directly:
+
+```bash
+DEEP_SELECT_BUILD_TARGET_PLATFORM=CUDA DEEP_SELECT_CUDA_ARCH=sm120 python -m pip install --no-build-isolation -v .
+```
+
+Run this in an environment that already has CUDA-enabled PyTorch and Triton installed. WSL also needs the system package `pciutils`, which provides the `lspci` command used by the project's build helper.
+
+After installation in WSL, activate the same virtual environment and run Python from outside the checkout (for example, `cd ~`) so the source directory does not shadow the installed extension.
+
+This target keeps the V3 selection algorithm and compiles SM120-specific BF16 and FP32 configurations with a smaller shared-memory footprint. It disables the 16-CTA BF16 cluster path and uses the ordinary V3 path. SM100-family 256-bit global load/store selection is not enabled for SM120; the 128-bit path is used instead. The current SM120 configurations support `topk <= 1024` and `vocab_size < 5,242,880`; the default build target remains unchanged.
+
+Validated on WSL2 Ubuntu 24.04, CUDA Toolkit 12.8, PyTorch 2.11.0+cu128, and an RTX 5060 Laptop GPU. Smoke checks matched `torch.topk` for BF16 and FP32, including `topk=1024`, sorted-index output, and indices-only output. A representative 28-case performance run compared against `torch.topk` on this GPU; speedups ranged from 1.37x to 6.22x (median 4.76x). These measurements are hardware- and shape-specific, and do not cover the full upstream benchmark matrix. See [`benchmark_results_sm120_rtx5060.csv`](benchmark_results_sm120_rtx5060.csv); broader shapes and repeatability still need coverage.
+
 ## Usage
 
 ```python

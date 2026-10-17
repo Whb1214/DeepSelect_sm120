@@ -18,7 +18,13 @@ static constexpr uint32_t INPUT_STRIDE_ALIGNMENT_REQUIREMENT = 1024; // In numbe
 static constexpr uint32_t OUTPUT_STRIDE_ALIGNMENT_REQUIREMENT = 32; // In number of bytes
 
 static constexpr uint32_t MAX_INT_ADDITION_RANGE_BY_FP32_SIMULATION = 1u << 23;
+#if defined(DEEP_SELECT_TARGET_SM120)
+// The smaller SM120 shared-memory profile uses a correspondingly smaller
+// index-window table than the original V3 configurations.
+static constexpr uint32_t MAX_VOCAB_SIZE = 5u * 1024 * 1024;
+#else
 static constexpr uint32_t MAX_VOCAB_SIZE = 1u << 23;
+#endif
 static_assert(MAX_VOCAB_SIZE <= MAX_INT_ADDITION_RANGE_BY_FP32_SIMULATION);
 
 #elif defined(DEEP_SELECT_IS_BUILD_ON_ASCEND)

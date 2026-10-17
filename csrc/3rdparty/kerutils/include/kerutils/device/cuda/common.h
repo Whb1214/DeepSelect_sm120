@@ -53,7 +53,8 @@ static_assert(false, "kerutils doesn't support SM architectures below SM80");
 #define KERUTILS_ENABLE_SM90A
 #endif
 
-#if (defined(__CUDA_ARCH__) && (__CUDA_ARCH__ >= 1000))
+// SM120 is a distinct architecture family; do not enable SM100-only paths on it.
+#if (defined(__CUDA_ARCH__) && (__CUDA_ARCH__ >= 1000 && __CUDA_ARCH__ < 1200))
 #define KERUTILS_ENABLE_SM100
 #endif
 

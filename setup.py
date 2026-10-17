@@ -102,6 +102,12 @@ def build_on_cuda_platform():
 
     assert CUDA_HOME is not None, "PyTorch must be compiled with CUDA support"
 
+    cuda_arch = os.environ.get("DEEP_SELECT_CUDA_ARCH", "").lower()
+    if cuda_arch not in ("", "sm120"):
+        raise RuntimeError(
+            "DEEP_SELECT_CUDA_ARCH currently supports only 'sm120' or unset."
+        )
+
     def append_nvcc_threads(nvcc_extra_args):
         nvcc_threads = os.getenv("NVCC_THREADS") or "16"
         return nvcc_extra_args + ["--threads", nvcc_threads]
@@ -113,30 +119,44 @@ def build_on_cuda_platform():
     nvcc_version_number = nvcc_version.split("release ")[1].split(",")[0].strip()
     major, minor = map(int, nvcc_version_number.split("."))
     print(f"Compiling using NVCC {major}.{minor}")
-    if major < 12 or (major == 12 and minor <= 8):
-        raise RuntimeError("sm100 compilation requires NVCC 12.9 or higher.")
-
-    cc_flag = [
-        # Currently skip build for sm80 and sm90 to speed up compilation
-        # "-gencode", "arch=compute_80,code=sm_80",
-        # "-gencode", "arch=compute_90a,code=sm_90a",
-
-        # Compile sm100 and sm103 separately to give the compiler more room for optimization
-        "-gencode", "arch=compute_100a,code=sm_100a",
-        "-gencode", "arch=compute_103a,code=sm_103a",
-    ]
+    if cuda_arch == "sm120":
+        if major < 12 or (major == 12 and minor < 8):
+            raise RuntimeError("sm120 compilation requires NVCC 12.8 or higher.")
+        cc_flag = ["-gencode", "arch=compute_120,code=sm_120"]
+        arch_defines = ["-DDEEP_SELECT_TARGET_SM120"]
+        # Use SM120-specific lower-shared-memory V3 specializations. The
+        # original V3 tuples require more shared memory than SM120 provides.
+        cuda_sources = ["csrc/api.cpp"] + sorted(
+            str(source)
+            for instantiation_dir in (
+                Path("csrc/cuda_kernels/v3_sm120/instantiations"),
+                Path("csrc/cuda_kernels/v3_fp32_sm120/instantiations"),
+            )
+            for source in instantiation_dir.glob("*.cu")
+        )
+    else:
+        if major < 12 or (major == 12 and minor <= 8):
+            raise RuntimeError("sm100 compilation requires NVCC 12.9 or higher.")
+        # Compile sm100 and sm103 separately to give the compiler more room for optimization.
+        cc_flag = [
+            "-gencode", "arch=compute_100a,code=sm_100a",
+            "-gencode", "arch=compute_103a,code=sm_103a",
+        ]
+        arch_defines = []
+        cuda_sources = CUDA_SOURCES
 
     this_dir = os.path.dirname(os.path.abspath(__file__))
 
     ext_modules = [CUDAExtension(
         name="deep_select.deep_select_cuda",
-        sources=CUDA_SOURCES,
+        sources=cuda_sources,
         extra_compile_args={
-            "cxx": ["-O3", "-std=c++20", "-DNDEBUG", "-Wno-deprecated-declarations", "-DKERUTILS_IS_BUILD_ON_CUDA", "-DDEEP_SELECT_IS_BUILD_ON_CUDA"],
+            "cxx": ["-O3", "-std=c++20", "-DNDEBUG", "-Wno-deprecated-declarations", "-DKERUTILS_IS_BUILD_ON_CUDA", "-DDEEP_SELECT_IS_BUILD_ON_CUDA"] + arch_defines,
             "nvcc": append_nvcc_threads([
                 "-O3",
                 "-std=c++20",
                 "-DDEEP_SELECT_IS_BUILD_ON_CUDA",
+                *arch_defines,
                 "-Wno-deprecated-declarations",
                 "-U__CUDA_NO_HALF_OPERATORS__",
                 "-U__CUDA_NO_HALF_CONVERSIONS__",
@@ -272,7 +292,9 @@ except Exception:
     # a valid PEP 440 local version in that case.
     git_rev = "unknown"
 
-datetime_rev = datetime.now().strftime("%Y%m%d.%H%M%S")
+# pip invokes setup.py separately for metadata preparation and wheel building.
+# Keep this local build suffix stable across those invocations.
+datetime_rev = datetime.now().strftime("%Y%m%d")
 
 if build_target_platform == kk.Platform.CUDA:
     ext_modules, build_ext = build_on_cuda_platform()

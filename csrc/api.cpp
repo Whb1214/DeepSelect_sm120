@@ -16,7 +16,9 @@
 #include "cuda_kernels/config.h"
 #include "cuda_kernels/v3/topk_select.h"
 #include "cuda_kernels/v3_fp32/topk_select.h"
+#ifndef DEEP_SELECT_TARGET_SM120
 #include "cuda_kernels/v3_cluster/topk_select.h"
+#endif
 
 #elif defined(DEEP_SELECT_IS_BUILD_ON_ASCEND)
 
@@ -147,12 +149,30 @@ void topk(
     // Contract: sorted_value is a 32-bit-value-only feature.
     TORCH_CHECK(!(sorted_value && value_t == at::kBFloat16), "`sorted_value` is only supported for float32 input");
 
-    uint32_t num_sm = device_prop->multiProcessorCount;
-    uint32_t num_waves = (uint32_t)(batch_size + num_sm - 1) / num_sm;
-
     if (value_t == at::kBFloat16) {
         TORCH_CHECK((uint32_t)vocab_size < MAX_VOCAB_SIZE,
-                    "vocab_size must be < 2^23 for bfloat16 input");
+                    "vocab_size exceeds the supported limit for bfloat16 input");
+#ifdef DEEP_SELECT_TARGET_SM120
+        TORCH_CHECK(topk <= 1024, "SM120 currently supports topk <= 1024");
+        INTEGER_TYPE_SWITCH(output_index_t, OutIdxT, [&]() {
+            BOOL_SWITCH(sorted_index, SORTED_INDEX, [&]() {
+                BOOL_SWITCH(return_value, RETURN_VALUE, [&]() {
+                    auto launch = [&]<uint32_t MAX_TOPK>() {
+                        topk_select_bf16_normal::run_topk_select_kernel<
+                            TopkSelectConfig<nv_bfloat16, OutIdxT, false, SORTED_INDEX, RETURN_VALUE,
+                                             MAX_TOPK, 256, 1, 4096, 1024, 2, 512, 1, MAX_VOCAB_SIZE>>(args);
+                    };
+                    if (topk <= 512) {
+                        launch.template operator()<512>();
+                    } else {
+                        launch.template operator()<1024>();
+                    }
+                });
+            });
+        });
+#else
+        uint32_t num_sm = device_prop->multiProcessorCount;
+        uint32_t num_waves = (uint32_t)(batch_size + num_sm - 1) / num_sm;
         if (batch_size <= 6 && (uint32_t)vocab_size >= 512u * 1024u && topk <= 1024) {  // TODO Tune
             INTEGER_TYPE_SWITCH(output_index_t, OutIdxT, [&]() {
                 BOOL_SWITCH(sorted_index, SORTED_INDEX, [&]() {
@@ -189,10 +209,39 @@ void topk(
                 });
             });
         }
+#endif
     } else {
         TORCH_CHECK((uint32_t)vocab_size < MAX_VOCAB_SIZE,
-                    "vocab_size must be < 2^23 for float32 input");
+                    "vocab_size exceeds the supported limit for float32 input");
 
+#ifdef DEEP_SELECT_TARGET_SM120
+        TORCH_CHECK(topk <= 1024, "SM120 currently supports topk <= 1024");
+        INTEGER_TYPE_SWITCH(output_index_t, OutIdxT, [&]() {
+            auto dispatch = [&]<bool SORTED_VALUE, bool SORTED_INDEX, bool RETURN_VALUE>() {
+                auto launch = [&]<uint32_t MAX_TOPK>() {
+                    topk_select_fp32::run_topk_select_kernel<
+                        TopkSelectConfig<float, OutIdxT, SORTED_VALUE, SORTED_INDEX, RETURN_VALUE,
+                                         MAX_TOPK, 256, 1, 4096, 1024, 2, 512, 1, MAX_VOCAB_SIZE>>(args);
+                };
+                if (topk <= 512) {
+                    launch.template operator()<512>();
+                } else {
+                    launch.template operator()<1024>();
+                }
+            };
+            if (sorted_value) {
+                dispatch.template operator()<true, false, true>();
+            } else {
+                BOOL_SWITCH(sorted_index, SORTED_INDEX, [&]() {
+                    BOOL_SWITCH(return_value, RETURN_VALUE, [&]() {
+                        dispatch.template operator()<false, SORTED_INDEX, RETURN_VALUE>();
+                    });
+                });
+            }
+        });
+#else
+        uint32_t num_sm = device_prop->multiProcessorCount;
+        uint32_t num_waves = (uint32_t)(batch_size + num_sm - 1) / num_sm;
         INTEGER_TYPE_SWITCH(output_index_t, OutIdxT, [&]() {
             //   topk <= 1024        -> 512t / B8192 / B2 4096 / TMA3
             //   topk in (1024,4096] -> 256t / B4096 / B2 4096 / TMA3 (correctness-only coverage tier)
@@ -218,6 +267,7 @@ void topk(
                 });
             }
         });
+#endif
     }
 #else
     TORCH_CHECK(value_t == at::kBFloat16, "input dtype must be bfloat16 on Ascend");
